@@ -1,0 +1,23 @@
+{
+  "pre-install": {
+  },
+  "apt": {
+  },
+  "pip3": {
+    "pyserial" : {"reinstall" : true},
+    "requests" : {"reinstall" : true}
+  },
+  "npm": {
+    "plugins/template/ressources/demond"  : {}
+  },
+  "composer": {
+       "plugins/template"  : {}
+  },
+  "yarn": {
+    "plugins/template/ressources/demond"  : {}
+  },
+  "plugin": {
+  },
+  "post-install": {
+  }
+}

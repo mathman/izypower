@@ -1,0 +1,33 @@
+{
+  "id": "izypower",
+  "name": "Izypower",
+  "description" : {
+		"fr_FR": "Suivi des centrales photovoltaïques Izypower (Materfrance) : puissance, énergie, batterie. Lecture seule, via le cloud Izypower."
+  },
+  "licence": "AGPL",
+  "author": "Mathman",
+  "version": "1.0.0",
+  "category": "monitoring",
+  "require": "4.2",
+  "os" : {
+		"min" : 10,
+		"max" : 12.99
+	},
+	"hasDependency": false,
+	"hasOwnDeamon": false,
+	"maxDependancyInstallTime": 0,
+	"changelog" : "https://mathman.github.io/izypower/fr_FR/changelog",
+	"documentation" : "https://mathman.github.io/izypower/fr_FR/",
+	"language": [
+		"fr_FR"
+	],
+	"compatibility": [
+		"smart",
+		"luna",
+		"atlas",
+		"rpi",
+		"docker",
+		"diy",
+		"mobile"
+	]
+}
