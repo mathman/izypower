@@ -1,19 +1,23 @@
-<div class="eqLogic eqLogic-widget allowResize izy-meter #eqLogic_class# #class#"
+<div class="eqLogic eqLogic-widget text-center allowResize izy-meter #custom_layout# #eqLogic_class# #class# #category#"
+     data-eqType="#eqType#"
      data-eqLogic_id="#id#"
      data-eqLogic_uid="#uid#"
      data-version="#version#"
+     data-translate-category="#translate_category#"
+     data-category="#category#"
+     data-tags="#tags#"
      style="width:#width#;height:#height#;#style#">
   <style>
     .izy-meter{
-      box-sizing:border-box; overflow:auto; padding:12px !important; border-radius:10px;
+      box-sizing:border-box; overflow:auto; padding:0 !important; border-radius:10px;
       background:rgba(120,120,120,.05);
     }
-    .izy-meter .izy-name{
-      display:block; text-align:center; color:inherit; text-decoration:none !important;
-      font-size:14px; font-weight:700; margin-bottom:6px; white-space:normal; word-break:break-word;
+    .izy-meter .widget-name{
+      border-radius:10px 10px 0 0;
     }
-    .izy-meter .izy-name:hover{ text-decoration:underline !important; }
-
+    .izy-meter .izy-body{
+      padding:12px;
+    }
     .izy-meter .izy-badge{
       display:flex; align-items:center; justify-content:center; gap:6px;
       font-size:11px; font-weight:700; padding:4px 10px; border-radius:12px;
@@ -38,8 +42,33 @@
     }
   </style>
 
-  <a href="index.php?v=d&m=izypower&p=izypower&id=#id#" class="izy-name" title="#name_display#">#name_display#</a>
+  <div class="widget-name">
+    <span style="color:#background-color#" title="#alert_name#">
+      <i class='#alert_icon#'></i>
+    </span>
+    <span class="cmd refresh pull-right cursor" data-cmd_id="#refresh_id#">
+      <i class="fas fa-sync"></i>
+    </span>
+    <span class="panelLink pull-left cursor">
+      <a href="#panelLink#"><i class="fas fa-external-link-alt"></i></a>
+    </span>
+    <span class="reportModeVisible">#name_display# <span class="object_name">#object_name#</span></span>
+    <a href="#eqLink#" class="reportModeHidden">#name_display# <span class="object_name">#object_name#</span></a>
+  </div>
+  <script>
+    if ('#panelLink#' == '') {
+      document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .panelLink')?.remove()
+    }
+    if ('#refresh_id#' != '') {
+      document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .refresh')?.addEventListener('click', function() {
+        jeedom.cmd.execute({ id: '#refresh_id#' })
+      })
+    } else {
+      document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .refresh')?.remove()
+    }
+  </script>
 
+  <div class="izy-body">
   <div class="izy-badge #online_class# #online_state_history_class#" data-cmd_id="#online_state_id#"><span class="izy-dot"></span>#online_label#</div>
 
   <div class="izy-total">
@@ -68,4 +97,5 @@
   </div>
 
   <div class="izy-footer #ip_address_history_class#" data-cmd_id="#ip_address_id#">#ip_address# · v#software_version#</div>
+  </div>
 </div>
