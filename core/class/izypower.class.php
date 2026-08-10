@@ -17,7 +17,7 @@
 
 /* * ***************************Includes********************************* */
 require_once __DIR__  . '/../../../../core/php/core.inc.php';
-require_once dirname(__FILE__) . '/IzypowerApi.class.php';
+require_once __DIR__  . '/../../core/php/izypower.inc.php';
 
 class izypower extends eqLogic {
 
