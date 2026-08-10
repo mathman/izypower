@@ -9,10 +9,6 @@
  * component power, device page, wifi, battery links).
  */
 
-if (!defined('__DIR__')) {
-    define('__DIR__', dirname(__FILE__));
-}
-
 class IzypowerApi {
 
     const BASE_URL = 'http://application.izypowercloud.fr/photo_voltaic';
