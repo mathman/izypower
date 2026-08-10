@@ -24,7 +24,7 @@ class izypower extends eqLogic {
     /* ===================== CRON / SYNCHRO ===================== */
 
     /**
-     * Appelé par le cron toutes les 3 minutes (cf plugin_info/info.json).
+     * Appelé par le cron toutes les minutes (cf plugin_info/info.json).
      * Parcourt tous les équipements "centrale" actifs et met à jour leurs commandes.
      */
     public static function cron() {
@@ -96,10 +96,87 @@ class izypower extends eqLogic {
             }
             $eqLogic->save();
             $eqLogic->buildCommands();
+
+            // Crée les onduleurs/compteurs manquants pour cette centrale.
+            try {
+                $eqLogic->syncDevices($stationId, $api);
+            } catch (Exception $e) {
+                log::add('izypower', 'error', 'Erreur synchro équipements de la centrale "' . $eqLogic->getName() . '" : ' . $e->getMessage());
+            }
         }
 
         log::add('izypower', 'info', 'Synchronisation terminée : ' . count($records) . ' centrale(s) trouvée(s), ' . $created . ' créée(s)');
         return count($records);
+    }
+
+    /**
+     * Crée les eqLogic manquants (onduleurs / compteurs) pour cette centrale et
+     * leurs commandes fixes, à partir de la liste des équipements retournée par
+     * l'API. Crée aussi les commandes de puissance par chaîne PV manquantes,
+     * pour les onduleurs déjà connus comme pour les nouveaux (une nouvelle
+     * chaîne PV peut apparaître sur un onduleur existant).
+     */
+    public function syncDevices($stationId, $api) {
+        $devicePage = $api->getDevicePage($stationId, 'all', 1, 100);
+        log::add('izypower', 'debug', 'Retour API getDevicePage (centrale ' . $stationId . ') : ' . json_encode($devicePage));
+        $deviceRecords = isset($devicePage['data']['records']) ? $devicePage['data']['records'] : array();
+
+        // Noms des chaînes PV par onduleur (pvData), pour créer leurs commandes
+        $component = array();
+        try {
+            $component = $api->getComponent($stationId, date('Y-m-d'));
+        } catch (Exception $e) {
+            log::add('izypower', 'debug', 'Component indisponible pour centrale ' . $stationId . ' : ' . $e->getMessage());
+        }
+        $pvDataList = isset($component['pvData']) && is_array($component['pvData']) ? $component['pvData'] : array();
+
+        $created = 0;
+        foreach ($deviceRecords as $deviceRecord) {
+            $deviceSn = isset($deviceRecord['sn']) ? $deviceRecord['sn'] : (isset($deviceRecord['serialNumber']) ? $deviceRecord['serialNumber'] : null);
+            if ($deviceSn === null || $deviceSn === '') {
+                continue;
+            }
+
+            $deviceType = isset($deviceRecord['deviceType']) ? $deviceRecord['deviceType'] : 'vm';
+            $deviceEq = self::byLogicalId($deviceSn, 'izypower');
+            $isNewDevice = !is_object($deviceEq);
+
+            if ($isNewDevice) {
+                $deviceName = isset($deviceRecord['deviceName']) ? $deviceRecord['deviceName'] : $deviceSn;
+
+                $deviceEq = new izypower();
+                $deviceEq->setEqType_name('izypower');
+                $deviceEq->setLogicalId($deviceSn);
+                $deviceEq->setIsEnable(1);
+                $deviceEq->setIsVisible(1);
+                $deviceEq->setConfiguration('device_type', $deviceType === 'meter' ? 'meter' : 'inverter');
+                $deviceEq->setName($deviceName . ' (Izypower)');
+                $deviceEq->setObject_id($this->getObject_id());
+                $deviceEq->save();
+
+                if ($deviceType === 'meter') {
+                    $deviceEq->buildMeterCommands();
+                } else {
+                    $deviceEq->buildDeviceCommands();
+                }
+                $created++;
+            }
+
+            if ($deviceType !== 'meter') {
+                $pvNames = array();
+                foreach ($pvDataList as $pvData) {
+                    if ((isset($pvData['sn']) ? $pvData['sn'] : null) !== $deviceSn) {
+                        continue;
+                    }
+                    $pvNames[] = isset($pvData['pv']) ? strtoupper($pvData['pv']) : 'PV';
+                }
+                $deviceEq->buildPvCommands($pvNames);
+            }
+        }
+
+        if ($created > 0) {
+            log::add('izypower', 'info', $created . ' équipement(s) créé(s) pour la centrale "' . $this->getName() . '"');
+        }
     }
 
     /* ===================== COMMANDES (CAPTEURS) ===================== */
@@ -161,23 +238,7 @@ class izypower extends eqLogic {
     }
 
     /**
-     * Identifiants logiques des anciennes commandes batterie, conservés ici
-     * uniquement pour pouvoir les supprimer proprement des équipements déjà
-     * synchronisés avant le retrait du support batterie.
-     */
-    private static function getObsoleteBatteryFields() {
-        return array(
-            'battery_power', 'battery_pv_power', 'battery_soc',
-            'battery_day_charge', 'battery_day_discharge',
-            'battery_month_charge', 'battery_month_discharge',
-            'battery_year_charge', 'battery_year_discharge',
-            'battery_total_charge', 'battery_total_discharge',
-        );
-    }
-
-    /**
-     * Crée les commandes manquantes pour cet eqLogic (idempotent) et supprime
-     * les anciennes commandes batterie si l'équipement en possédait encore.
+     * Crée les commandes manquantes pour cet eqLogic (idempotent).
      */
     public function buildCommands() {
         foreach (self::getPowerFields() as $logicalId => $def) {
@@ -194,13 +255,6 @@ class izypower extends eqLogic {
             list($field, $label, $unit) = $def;
             $isString = ($logicalId !== 'installed_capacity');
             $this->buildSensorCommand($logicalId, $label, $unit, 'info', $isString);
-        }
-
-        foreach (self::getObsoleteBatteryFields() as $logicalId) {
-            $cmd = $this->getCmd(null, $logicalId);
-            if (is_object($cmd)) {
-                $cmd->remove();
-            }
         }
 
         $this->save();
@@ -310,10 +364,9 @@ class izypower extends eqLogic {
     }
 
     /**
-     * Récupère la liste des onduleurs de cette centrale et crée/MAJ un équipement
-     * Jeedom autonome par onduleur (même type 'izypower', distingué par
-     * configuration['device_type'] = 'inverter'), avec Wi-Fi, état en ligne,
-     * puissance par chaîne PV.
+     * Récupère la liste des onduleurs de cette centrale et met à jour les valeurs
+     * de l'équipement correspondant à chaque onduleur/compteur déjà
+     * existant (Wi-Fi, état en ligne, puissance par chaîne PV).
      */
     private function pullDevices($api, $stationId, $stationInfo = array()) {
         $devicePage = $api->getDevicePage($stationId, 'all', 1, 100);
@@ -336,31 +389,14 @@ class izypower extends eqLogic {
                 continue;
             }
             $deviceType  = isset($deviceRecord['deviceType']) ? $deviceRecord['deviceType'] : 'vm';
-            $deviceName  = isset($deviceRecord['deviceName']) ? $deviceRecord['deviceName'] : ($deviceSn);
             $onlineState = isset($deviceRecord['onlineState']) ? $deviceRecord['onlineState'] : 0;
             $swVersion   = isset($deviceRecord['softwareVersion']) ? $deviceRecord['softwareVersion'] : null;
             $onlineLabel = ($onlineState == 1) ? 'en ligne' : 'hors ligne';
 
             $deviceEq = self::byLogicalId($deviceSn, 'izypower');
-            $isNew = !is_object($deviceEq);
-            if ($isNew) {
-                $deviceEq = new izypower();
-                $deviceEq->setEqType_name('izypower');
-                $deviceEq->setLogicalId($deviceSn);
-                $deviceEq->setIsEnable(1);
-                $deviceEq->setIsVisible(1);
-                $deviceEq->setConfiguration('device_type', $deviceType === 'meter' ? 'meter' : 'inverter');
-                // Nom posé uniquement à la création pour ne pas écraser un renommage manuel
-                $deviceEq->setName($deviceName . ' (Izypower)');
-            }
-            $deviceEq->setObject_id($this->getObject_id());
-            $deviceEq->save();
-
-            // Commandes communes (en ligne, version, Wi-Fi)
-            if ($deviceType === 'meter') {
-                $deviceEq->buildMeterCommands();
-            } else {
-                $deviceEq->buildDeviceCommands();
+            if (!is_object($deviceEq)) {
+                log::add('izypower', 'debug', 'Équipement ' . $deviceSn . ' inconnu, ignoré (relancez "Synchroniser les centrales" pour le créer)');
+                continue;
             }
 
             $deviceEq->updateCmdValue('online_state', ($onlineState == 1) ? 1 : 0);
@@ -384,7 +420,7 @@ class izypower extends eqLogic {
             if ($deviceType === 'meter') {
                 // Valeurs spécifiques compteur depuis dataDtos
                 $dataDtos = isset($deviceRecord['dataDtos']) && is_array($deviceRecord['dataDtos']) ? $deviceRecord['dataDtos'] : array();
-                $deviceEq->buildAndUpdateMeterValues($dataDtos);
+                $deviceEq->updateMeterValues($dataDtos);
                 // Puissance réseau instantanée depuis getStationInfo (grid_power)
                 $gridPower = isset($stationInfo['grid_power']) ? $stationInfo['grid_power'] : null;
                 if ($gridPower !== null) {
@@ -402,7 +438,7 @@ class izypower extends eqLogic {
                     $pvPower = isset($pvData['pvPower']) ? $pvData['pvPower'] : 0;
                     $pvPowers[$pvName] = $pvPower;
                 }
-                $deviceEq->buildAndUpdatePvCommands($pvPowers);
+                $deviceEq->updatePvValues($pvPowers);
                 $totalPvPower = array_sum($pvPowers);
                 log::add('izypower', 'info', 'Onduleur "' . $deviceEq->getName() . '" mis à jour : ' . $onlineLabel . ', ' . $totalPvPower . ' W (PV cumulé)');
             }
@@ -436,7 +472,7 @@ class izypower extends eqLogic {
     /**
      * Crée les commandes fixes manquantes pour cet équipement onduleur (idempotent).
      * Les commandes de puissance par chaîne PV sont gérées séparément par
-     * buildAndUpdatePvCommands(), car leur nombre varie selon l'onduleur.
+     * buildPvCommands(), car leur nombre varie selon l'onduleur.
      */
     public function buildDeviceCommands() {
         foreach (self::getDeviceFields() as $logicalId => $def) {
@@ -463,27 +499,43 @@ class izypower extends eqLogic {
     }
 
     /**
-     * Crée/MAJ une commande de puissance par chaîne PV détectée (PV1, PV2, ...)
-     * et alimente sa valeur. $pvPowers est un tableau ['PV1' => 350, 'PV2' => 280, ...].
+     * Crée uniquement une commande de puissance par chaîne PV détectée (PV1, PV2, ...).
      */
-    public function buildAndUpdatePvCommands($pvPowers) {
-        foreach ($pvPowers as $pvName => $pvPower) {
+    public function buildPvCommands($pvNames) {
+        $created = 0;
+        foreach ($pvNames as $pvName) {
             $logicalId = 'pv_power_' . strtolower($pvName);
             $cmd = $this->getCmd(null, $logicalId);
-            if (!is_object($cmd)) {
-                $cmd = new izypowerCmd();
-                $cmd->setLogicalId($logicalId);
-                $cmd->setEqLogic_id($this->getId());
-                $cmd->setName('Puissance ' . $pvName);
-                $cmd->setType('info');
-                $cmd->setSubType('numeric');
-                $cmd->setUnite('W');
-                $cmd->setIsVisible(1);
-                $cmd->save();
+            if (is_object($cmd)) {
+                continue;
             }
-            $cmd->event($pvPower);
+            $cmd = new izypowerCmd();
+            $cmd->setLogicalId($logicalId);
+            $cmd->setEqLogic_id($this->getId());
+            $cmd->setName('Puissance ' . $pvName);
+            $cmd->setType('info');
+            $cmd->setSubType('numeric');
+            $cmd->setUnite('W');
+            $cmd->setIsVisible(1);
+            $cmd->save();
+            $created++;
         }
-        $this->save();
+        if ($created > 0) {
+            $this->save();
+        }
+    }
+
+    /**
+     * Met à jour la valeur des commandes de puissance par chaîne PV déjà
+     * existantes : appelée depuis pullDevices() à chaque cron.
+     * $pvPowers est un tableau ['PV1' => 350, 'PV2' => 280, ...]. Une chaîne
+     * dont la commande n'existe pas encore est ignorée (elle sera créée à la
+     * prochaine synchronisation des centrales).
+     */
+    public function updatePvValues($pvPowers) {
+        foreach ($pvPowers as $pvName => $pvPower) {
+            $this->updateCmdValue('pv_power_' . strtolower($pvName), $pvPower);
+        }
     }
 
     /**
@@ -538,12 +590,12 @@ class izypower extends eqLogic {
     }
 
     /**
-     * Alimente les commandes spécifiques du compteur depuis les dataDtos
+     * Met à jour les commandes spécifiques du compteur depuis les dataDtos
      * (tableau de {key, value} renvoyé dans le device_record).
      * Les valeurs sont des strings avec unité ("58.5V", "50.01Hz", "0.93kWh") —
      * on extrait la partie numérique.
      */
-    public function buildAndUpdateMeterValues($dataDtos) {
+    public function updateMeterValues($dataDtos) {
         // Mapping clé dataDtos => logicalId de commande
         $keyMap = array(
             'v_ac_all'     => 'meter_voltage',
