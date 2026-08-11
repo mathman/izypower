@@ -21,6 +21,9 @@ class IzypowerApi {
     const DEVICE_PAGE_URL      = self::BASE_URL . '/api/device/page?powerId=%s&deviceType=%s&page=%s&limit=%s';
     const DEVICE_WIFI_URL      = self::BASE_URL . '/api/v3/device/wifi/%s';
     const BATTERY_LINKS_URL    = self::BASE_URL . '/izy/v2/battery/%s';
+    const DEVICE_TEMP_URL      = self::BASE_URL . '/api/report/device/data/%s?searchTime=%s&timeType=day&dataFlag=temp';
+    const DEVICE_UPGRADE_URL   = self::BASE_URL . '/api/v3/device/upgrade/%s';
+    const LAYOUT_POWER_URL     = self::BASE_URL . '/api/report/layoutPower/%s?searchTime=%s&isV2=%s';
 
     const TOKEN_HEADER    = 'x-tts-access-token';
     const APP_PLATFORM    = 'izy';
@@ -162,6 +165,33 @@ class IzypowerApi {
      */
     public function getBatteryLinks($serialNumber) {
         $url = sprintf(self::BATTERY_LINKS_URL, $serialNumber);
+        return $this->authenticatedGet($url);
+    }
+
+    /**
+     * Température de l'équipement (onduleurs "vm" uniquement).
+     * @param string $searchTime format Y-m-d
+     */
+    public function getDeviceTemp($serialNumber, $searchTime) {
+        $url = sprintf(self::DEVICE_TEMP_URL, $serialNumber, $searchTime);
+        return $this->authenticatedGet($url);
+    }
+
+    /**
+     * Liste des mises à jour disponibles pour les équipements d'une centrale
+     * (data[].sn / data[].needUpgrade).
+     */
+    public function getDeviceUpgrade($stationId) {
+        $url = sprintf(self::DEVICE_UPGRADE_URL, $stationId);
+        return $this->authenticatedGet($url);
+    }
+
+    /**
+     * Données "layoutPower" d'une centrale : sert à extraire les capteurs CT
+     * (pinces ampèremétriques ct2/ct3) via le noeud 'extra' de la dernière ligne.
+     */
+    public function getLayoutPower($stationId, $searchTime, $isV2 = true) {
+        $url = sprintf(self::LAYOUT_POWER_URL, $stationId, $searchTime, $isV2 ? 'true' : 'false');
         return $this->authenticatedGet($url);
     }
 
