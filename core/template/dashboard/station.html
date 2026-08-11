@@ -146,36 +146,63 @@
       <th></th><th>Jour</th><th>Mois</th><th>Année</th><th>Total</th>
     </tr>
     <tr>
-      <td>⚡ Conso</td>
+      <td>⚡ Conso (kWh)</td>
       <td class="#consumption_day_history_class#" data-cmd_id="#consumption_day_id#">#consumption_day#</td>
       <td class="#consumption_month_history_class#" data-cmd_id="#consumption_month_id#">#consumption_month#</td>
       <td class="#consumption_year_history_class#" data-cmd_id="#consumption_year_id#">#consumption_year#</td>
       <td class="#consumption_total_history_class#" data-cmd_id="#consumption_total_id#">#consumption_total#</td>
     </tr>
     <tr>
-      <td>☀️ dont PV</td>
+      <td>☀️ dont PV (kWh)</td>
       <td class="#consumption_from_pv_day_history_class#" data-cmd_id="#consumption_from_pv_day_id#">#consumption_from_pv_day#</td>
       <td class="#consumption_from_pv_month_history_class#" data-cmd_id="#consumption_from_pv_month_id#">#consumption_from_pv_month#</td>
       <td class="#consumption_from_pv_year_history_class#" data-cmd_id="#consumption_from_pv_year_id#">#consumption_from_pv_year#</td>
       <td class="#consumption_from_pv_total_history_class#" data-cmd_id="#consumption_from_pv_total_id#">#consumption_from_pv_total#</td>
     </tr>
     <tr>
-      <td>⬇️ Import</td>
+      <td>⬇️ Import (kWh)</td>
       <td class="#grid_day_import_history_class#" data-cmd_id="#grid_day_import_id#">#grid_day_import#</td>
       <td class="#grid_month_import_history_class#" data-cmd_id="#grid_month_import_id#">#grid_month_import#</td>
       <td class="#grid_year_import_history_class#" data-cmd_id="#grid_year_import_id#">#grid_year_import#</td>
       <td class="#grid_total_import_history_class#" data-cmd_id="#grid_total_import_id#">#grid_total_import#</td>
     </tr>
     <tr>
-      <td>⬆️ Export</td>
+      <td>⬆️ Export (kWh)</td>
       <td class="#grid_day_export_history_class#" data-cmd_id="#grid_day_export_id#">#grid_day_export#</td>
       <td class="#grid_month_export_history_class#" data-cmd_id="#grid_month_export_id#">#grid_month_export#</td>
       <td class="#grid_year_export_history_class#" data-cmd_id="#grid_year_export_id#">#grid_year_export#</td>
       <td class="#grid_total_export_history_class#" data-cmd_id="#grid_total_export_id#">#grid_total_export#</td>
     </tr>
+    <tr>
+      <td>☀️ Couverture PV (%)</td>
+      <td class="#cover_rate_day_history_class#" data-cmd_id="#cover_rate_day_id#">#cover_rate_day#</td>
+      <td class="#cover_rate_month_history_class#" data-cmd_id="#cover_rate_month_id#">#cover_rate_month#</td>
+      <td class="#cover_rate_year_history_class#" data-cmd_id="#cover_rate_year_id#">#cover_rate_year#</td>
+      <td class="#cover_rate_total_history_class#" data-cmd_id="#cover_rate_total_id#">#cover_rate_total#</td>
+    </tr>
+    <tr>
+      <td>🔋 Conso depuis PV (%)</td>
+      <td class="#consumption_rate_day_history_class#" data-cmd_id="#consumption_rate_day_id#">#consumption_rate_day#</td>
+      <td class="#consumption_rate_month_history_class#" data-cmd_id="#consumption_rate_month_id#">#consumption_rate_month#</td>
+      <td class="#consumption_rate_year_history_class#" data-cmd_id="#consumption_rate_year_id#">#consumption_rate_year#</td>
+      <td class="#consumption_rate_total_history_class#" data-cmd_id="#consumption_rate_total_id#">#consumption_rate_total#</td>
+    </tr>
+    <tr>
+      <td>⬇️ Taux Import (%)</td>
+      <td class="#grid_import_rate_day_history_class#" data-cmd_id="#grid_import_rate_day_id#">#grid_import_rate_day#</td>
+      <td class="#grid_import_rate_month_history_class#" data-cmd_id="#grid_import_rate_month_id#">#grid_import_rate_month#</td>
+      <td class="#grid_import_rate_year_history_class#" data-cmd_id="#grid_import_rate_year_id#">#grid_import_rate_year#</td>
+      <td class="#grid_import_rate_total_history_class#" data-cmd_id="#grid_import_rate_total_id#">#grid_import_rate_total#</td>
+    </tr>
+    <tr>
+      <td>⬆️ Taux Export (%)</td>
+      <td class="#grid_export_rate_day_history_class#" data-cmd_id="#grid_export_rate_day_id#">#grid_export_rate_day#</td>
+      <td class="#grid_export_rate_month_history_class#" data-cmd_id="#grid_export_rate_month_id#">#grid_export_rate_month#</td>
+      <td class="#grid_export_rate_year_history_class#" data-cmd_id="#grid_export_rate_year_id#">#grid_export_rate_year#</td>
+      <td class="#grid_export_rate_total_history_class#" data-cmd_id="#grid_export_rate_total_id#">#grid_export_rate_total#</td>
+    </tr>
   </table>
-  <div style="font-size:9px;opacity:.5;text-align:right;margin-bottom:8px;">kWh</div>
 
-  <div class="izy-footer">#device_count# équipement(s) · #station_status# · MAJ #last_update#</div>
+  <div class="izy-footer">#device_count# équipement(s) · #station_status# · MAJ #last_update##upgrade_badge#</div>
   </div>
 </div>

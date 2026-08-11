@@ -130,6 +130,16 @@ class izypower extends eqLogic {
         }
         $pvDataList = isset($component['pvData']) && is_array($component['pvData']) ? $component['pvData'] : array();
 
+        // Pinces CT (layoutPower) : un seul appel pour toute la centrale, servant
+        // à détecter les noms de CT (CT2, CT3, ...) rattachés aux compteurs.
+        $ctItems = array();
+        try {
+            $layoutPower = $api->getLayoutPower($stationId, date('Y-m-d'));
+            $ctItems = self::extractLatestLayoutExtra($layoutPower);
+        } catch (Exception $e) {
+            log::add('izypower', 'debug', 'LayoutPower indisponible pour centrale ' . $stationId . ' : ' . $e->getMessage());
+        }
+
         $created = 0;
         foreach ($deviceRecords as $deviceRecord) {
             $deviceSn = isset($deviceRecord['sn']) ? $deviceRecord['sn'] : (isset($deviceRecord['serialNumber']) ? $deviceRecord['serialNumber'] : null);
@@ -154,15 +164,36 @@ class izypower extends eqLogic {
                 $deviceEq->setObject_id($this->getObject_id());
                 $deviceEq->save();
 
-                if ($deviceType === 'meter') {
-                    $deviceEq->buildMeterCommands();
-                } else {
+                if ($deviceType !== 'meter') {
                     $deviceEq->buildDeviceCommands();
                 }
                 $created++;
             }
 
-            if ($deviceType !== 'meter') {
+            if ($deviceType === 'vm') {
+                $deviceEq->buildTemperatureCommand();
+            }
+
+            if ($deviceType === 'meter') {
+                // Noms des pinces CT rattachées à ce compteur (CT2, CT3, ...),
+                // transmis à buildMeterCommands() qui crée les commandes CT
+                // correspondantes (buildCtCommands) si besoin.
+                $ctNames = array();
+                foreach ($ctItems as $item) {
+                    $itemPv = isset($item['pv']) ? strtolower($item['pv']) : '';
+                    if (strpos($itemPv, 'ct') !== 0) {
+                        continue;
+                    }
+                    $itemSn = isset($item['deviceSn']) ? $item['deviceSn'] : (isset($item['deviceSN']) ? $item['deviceSN'] : null);
+                    if ($itemSn !== $deviceSn) {
+                        continue;
+                    }
+                    $ctNames[] = strtoupper($itemPv);
+                }
+                // Rappelée à chaque synchro (idempotente) pour détecter une
+                // pince CT apparaissant après coup sur un compteur existant.
+                $deviceEq->buildMeterCommands($ctNames);
+            } else {
                 $pvNames = array();
                 foreach ($pvDataList as $pvData) {
                     if ((isset($pvData['sn']) ? $pvData['sn'] : null) !== $deviceSn) {
@@ -238,6 +269,40 @@ class izypower extends eqLogic {
     }
 
     /**
+     * Taux/ratios calculés par l'API et renvoyés directement dans le rapport
+     * (getReport), à la racine de la réponse comme les champs d'énergie.
+     * clé logique => [timeType, field_name dans report, libellé].
+     */
+    public static function getRateFields() {
+        $result = array();
+        $ratios = array(
+            'cover_rate'          => 'cover_rate',
+            'consumption_rate'    => 'consumption_rate',
+            'grid_import_rate'    => 'meter_energy_p_rate',
+            'grid_export_rate'    => 'meter_energy_n_rate',
+        );
+        $labels = array(
+            'cover_rate'       => 'Taux de Couverture PV',
+            'consumption_rate' => 'Taux Consommation depuis PV',
+            'grid_import_rate' => 'Taux Import Réseau',
+            'grid_export_rate' => 'Taux Export Réseau',
+        );
+        $periods = array(
+            'day'   => array('day',   'Jour'),
+            'month' => array('month', 'Mois'),
+            'year'  => array('year',  'Année'),
+            'all'   => array('total', 'Total'),
+        );
+        foreach ($ratios as $prefix => $field) {
+            foreach ($periods as $timeType => $periodDef) {
+                list($suffix, $periodLabel) = $periodDef;
+                $result[$prefix . '_' . $suffix] = array($timeType, $field, $labels[$prefix] . ' ' . $periodLabel);
+            }
+        }
+        return $result;
+    }
+
+    /**
      * Crée les commandes manquantes pour cet eqLogic (idempotent).
      */
     public function buildCommands() {
@@ -256,6 +321,13 @@ class izypower extends eqLogic {
             $isString = ($logicalId !== 'installed_capacity');
             $this->buildSensorCommand($logicalId, $label, $unit, 'info', $isString);
         }
+
+        foreach (self::getRateFields() as $logicalId => $def) {
+            list($timeType, $field, $label) = $def;
+            $this->buildSensorCommand($logicalId, $label, '%', 'info');
+        }
+
+        $this->buildSensorCommand('upgrade_available', 'Mise à Jour Disponible', null, 'info');
 
         $this->save();
     }
@@ -351,6 +423,13 @@ class izypower extends eqLogic {
             $this->updateCmdValue($logicalId, $value);
         }
 
+        // Taux/ratios renvoyés directement par l'API (mêmes rapports que ci-dessus)
+        foreach (self::getRateFields() as $logicalId => $def) {
+            list($timeType, $field) = $def;
+            $value = isset($reports[$timeType][$field]) ? $reports[$timeType][$field] : null;
+            $this->updateCmdValue($logicalId, self::extractRateValue($value));
+        }
+
         $productionPower = isset($info['power']) ? $info['power'] : 0;
         log::add('izypower', 'info', 'Centrale "' . $this->getName() . '" mise à jour : production ' . $productionPower . ' W');
 
@@ -382,6 +461,37 @@ class izypower extends eqLogic {
             log::add('izypower', 'debug', 'Component indisponible pour centrale ' . $stationId . ' : ' . $e->getMessage());
         }
         $pvDataList = isset($component['pvData']) && is_array($component['pvData']) ? $component['pvData'] : array();
+
+        // Mises à jour disponibles : un seul appel pour toute la centrale,
+        // réutilisé pour l'agrégat centrale et pour chaque équipement.
+        $upgradeEntries = array();
+        try {
+            $upgradeData = $api->getDeviceUpgrade($stationId);
+            log::add('izypower', 'debug', 'Retour API getDeviceUpgrade (centrale ' . $stationId . ') : ' . json_encode($upgradeData));
+            $upgradeEntries = isset($upgradeData['data']) && is_array($upgradeData['data']) ? $upgradeData['data'] : array();
+        } catch (Exception $e) {
+            log::add('izypower', 'debug', 'Mises à jour indisponibles pour centrale ' . $stationId . ' : ' . $e->getMessage());
+        }
+
+        $stationUpgradeAvailable = 0;
+        foreach ($upgradeEntries as $entry) {
+            if (!empty($entry['needUpgrade'])) {
+                $stationUpgradeAvailable = 1;
+                break;
+            }
+        }
+        $this->updateCmdValue('upgrade_available', $stationUpgradeAvailable);
+
+        // Capteurs CT (pinces ampèremétriques) : dernière ligne exploitable
+        // du rapport layoutPower du jour, un seul appel pour toute la centrale.
+        $ctItems = array();
+        try {
+            $layoutPower = $api->getLayoutPower($stationId, date('Y-m-d'));
+            log::add('izypower', 'debug', 'Retour API getLayoutPower (centrale ' . $stationId . ') : ' . json_encode($layoutPower));
+            $ctItems = self::extractLatestLayoutExtra($layoutPower);
+        } catch (Exception $e) {
+            log::add('izypower', 'debug', 'LayoutPower indisponible pour centrale ' . $stationId . ' : ' . $e->getMessage());
+        }
 
         foreach ($deviceRecords as $deviceRecord) {
             $deviceSn = isset($deviceRecord['sn']) ? $deviceRecord['sn'] : (isset($deviceRecord['serialNumber']) ? $deviceRecord['serialNumber'] : null);
@@ -417,7 +527,35 @@ class izypower extends eqLogic {
                 log::add('izypower', 'debug', 'Wi-Fi indisponible pour ' . $deviceSn . ' : ' . $e->getMessage());
             }
 
+            // Mise à jour disponible pour cet équipement précis
+            $deviceUpgradeAvailable = 0;
+            foreach ($upgradeEntries as $entry) {
+                $entrySn = isset($entry['sn']) ? $entry['sn'] : null;
+                if ($entrySn === $deviceSn && !empty($entry['needUpgrade'])) {
+                    $deviceUpgradeAvailable = 1;
+                    break;
+                }
+            }
+            $deviceEq->updateCmdValue('upgrade_available', $deviceUpgradeAvailable);
+
             if ($deviceType === 'meter') {
+                // Capteurs CT rattachés à ce compteur (ct2, ct3, ...).
+                $ctPowers = array();
+                foreach ($ctItems as $item) {
+                    $itemPv = isset($item['pv']) ? strtolower($item['pv']) : '';
+                    if (strpos($itemPv, 'ct') !== 0) {
+                        continue;
+                    }
+                    $itemSn = isset($item['deviceSn']) ? $item['deviceSn'] : (isset($item['deviceSN']) ? $item['deviceSN'] : null);
+                    if ($itemSn !== $deviceSn) {
+                        continue;
+                    }
+                    $ctPowers[strtoupper($itemPv)] = isset($item['dataVal']) ? $item['dataVal'] : 0;
+                }
+                if (!empty($ctPowers)) {
+                    $deviceEq->updateCtValues($ctPowers);
+                }
+
                 // Valeurs spécifiques compteur depuis dataDtos
                 $dataDtos = isset($deviceRecord['dataDtos']) && is_array($deviceRecord['dataDtos']) ? $deviceRecord['dataDtos'] : array();
                 $deviceEq->updateMeterValues($dataDtos);
@@ -441,6 +579,17 @@ class izypower extends eqLogic {
                 $deviceEq->updatePvValues($pvPowers);
                 $totalPvPower = array_sum($pvPowers);
                 log::add('izypower', 'info', 'Onduleur "' . $deviceEq->getName() . '" mis à jour : ' . $onlineLabel . ', ' . $totalPvPower . ' W (PV cumulé)');
+
+                // Seulement si l'équipement est en ligne (sinon l'API ne renvoie rien).
+                if ($deviceType === 'vm' && $onlineState == 1) {
+                    try {
+                        $temp = $api->getDeviceTemp($deviceSn, date('Y-m-d'));
+                        log::add('izypower', 'debug', 'Retour API getDeviceTemp (sn=' . $deviceSn . ') : ' . json_encode($temp));
+                        $deviceEq->updateCmdValue('temperature', self::extractLastTempValue($temp));
+                    } catch (Exception $e) {
+                        log::add('izypower', 'debug', 'Température indisponible pour ' . $deviceSn . ' : ' . $e->getMessage());
+                    }
+                }
             }
 			$deviceEq->refreshWidget();
         }
@@ -453,6 +602,56 @@ class izypower extends eqLogic {
         }
     }
 
+    /**
+     * Normalise une valeur de taux/ratio renvoyée par l'API : parfois une
+     * chaîne suffixée par '%' (ex. "42.5%"), parfois un nombre. Retourne un
+     * float arrondi, ou null si absent/non numérique.
+     */
+    private static function extractRateValue($value) {
+        if ($value === null) {
+            return null;
+        }
+        if (is_string($value)) {
+            $value = rtrim($value, '%');
+        }
+        return is_numeric($value) ? round(floatval($value), 2) : null;
+    }
+
+    /**
+     * Extrait le dernier noeud 'extra' non vide de la réponse getLayoutPower()
+     * (data['data'][n]['extra'][]), en partant de la fin (lignes les plus
+     * récentes du rapport journalier). C'est ce noeud qui contient les
+     * mesures des pinces CT (pv='ct2'/'ct3', deviceSn, dataVal).
+     */
+    private static function extractLatestLayoutExtra($layoutPower) {
+        $rows = isset($layoutPower['data']['data']) && is_array($layoutPower['data']['data']) ? $layoutPower['data']['data'] : array();
+        for ($i = count($rows) - 1; $i >= 0; $i--) {
+            $extra = isset($rows[$i]['extra']) ? $rows[$i]['extra'] : array();
+            if (is_array($extra) && !empty($extra)) {
+                return $extra;
+            }
+        }
+        return array();
+    }
+
+    /**
+     * Extrait la dernière valeur de température de la réponse
+     * getDeviceTemp() : data['data'][0]['data'][-1]['val'].
+     * Retourne null si la structure est absente/vide (ex. équipement hors ligne).
+     */
+    private static function extractLastTempValue($temp) {
+        $outer = is_array($temp) && isset($temp['data']) && is_array($temp['data']) ? $temp['data'] : array();
+        if (empty($outer) || !isset($outer[0]['data']) || !is_array($outer[0]['data'])) {
+            return null;
+        }
+        $inner = $outer[0]['data'];
+        if (empty($inner)) {
+            return null;
+        }
+        $last = end($inner);
+        return isset($last['val']) ? $last['val'] : null;
+    }
+
     /* ===================== COMMANDES ONDULEUR (équipement device_type=inverter) ===================== */
 
     /**
@@ -461,11 +660,12 @@ class izypower extends eqLogic {
      */
     public static function getDeviceFields() {
         return array(
-            'online_state'     => array('En Ligne',           null,   'numeric'),
-            'software_version' => array('Version Logicielle', null,   'string'),
-            'wifi_signal'      => array('Signal Wi-Fi',        'dBm',  'numeric'),
-            'wifi_network'     => array('Réseau Wi-Fi',        null,   'string'),
-            'ip_address'       => array('Adresse IP',          null,   'string'),
+            'online_state'      => array('En Ligne',                null,   'numeric'),
+            'software_version'  => array('Version Logicielle',      null,   'string'),
+            'wifi_signal'       => array('Signal Wi-Fi',             'dBm',  'numeric'),
+            'wifi_network'      => array('Réseau Wi-Fi',             null,   'string'),
+            'ip_address'        => array('Adresse IP',               null,   'string'),
+            'upgrade_available' => array('Mise à Jour Disponible',   null,   'numeric'),
         );
     }
 
@@ -495,6 +695,26 @@ class izypower extends eqLogic {
 
             $cmd->save();
         }
+        $this->save();
+    }
+
+    /**
+     * Crée la commande de température.
+     */
+    public function buildTemperatureCommand() {
+        $cmd = $this->getCmd(null, 'temperature');
+        if (!is_object($cmd)) {
+            $cmd = new izypowerCmd();
+            $cmd->setLogicalId('temperature');
+            $cmd->setEqLogic_id($this->getId());
+            $cmd->setName('Température');
+        }
+        $cmd->setType('info');
+        $cmd->setSubType('numeric');
+        $cmd->setUnite('°C');
+        $cmd->setIsVisible(1);
+        $cmd->setGeneric_type('TEMPERATURE');
+        $cmd->save();
         $this->save();
     }
 
@@ -539,11 +759,50 @@ class izypower extends eqLogic {
     }
 
     /**
+     * Crée uniquement une commande de puissance par pince CT détectée (CT2, CT3, ...).
+     */
+    public function buildCtCommands($ctNames) {
+        $created = 0;
+        foreach ($ctNames as $ctName) {
+            $logicalId = 'ct_power_' . strtolower($ctName);
+            $cmd = $this->getCmd(null, $logicalId);
+            if (is_object($cmd)) {
+                continue;
+            }
+            $cmd = new izypowerCmd();
+            $cmd->setLogicalId($logicalId);
+            $cmd->setEqLogic_id($this->getId());
+            $cmd->setName('Puissance ' . strtoupper($ctName));
+            $cmd->setType('info');
+            $cmd->setSubType('numeric');
+            $cmd->setUnite('W');
+            $cmd->setIsVisible(1);
+            $cmd->save();
+            $created++;
+        }
+        if ($created > 0) {
+            $this->save();
+        }
+    }
+
+    /**
+     * Met à jour la valeur des commandes de pince CT déjà existantes.
+     * $ctPowers est un tableau ['CT2' => 120, 'CT3' => -45, ...].
+     */
+    public function updateCtValues($ctPowers) {
+        foreach ($ctPowers as $ctName => $ctPower) {
+            $this->updateCmdValue('ct_power_' . strtolower($ctName), $ctPower);
+        }
+    }
+
+    /**
      * Crée les commandes fixes pour un équipement compteur (meter).
      * Commandes communes (online_state, software_version, wifi...) + commandes
-     * spécifiques compteur (tension, fréquence, énergie +/-).
+     * spécifiques compteur (tension, fréquence, énergie +/-). Crée aussi, le
+     * cas échéant, les commandes de pince CT détectées sur ce compteur
+     * (cf. buildCtCommands(), appelée depuis syncDevices()).
      */
-    public function buildMeterCommands() {
+    public function buildMeterCommands($ctNames = array()) {
         // Commandes communes avec les onduleurs
         foreach (self::getDeviceFields() as $logicalId => $def) {
             list($label, $unit, $type) = $def;
@@ -587,6 +846,9 @@ class izypower extends eqLogic {
             $cmd->save();
         }
         $this->save();
+        if (!empty($ctNames)) {
+            $this->buildCtCommands($ctNames);
+        }
     }
 
     /**
@@ -676,10 +938,24 @@ class izypower extends eqLogic {
                 $replace['#' . $k . '_history_class#'] = $h['class'];
             }
 
-            // Ratio d'autoconsommation du jour (consommation couverte par le PV)
-            $consDay = floatval($get('consumption_day', 0));
-            $consPvDay = floatval($get('consumption_from_pv_day', 0));
-            $replace['#autoconso_pct#'] = ($consDay > 0) ? min(100, round(($consPvDay / $consDay) * 100)) : 0;
+            foreach (array_keys(self::getRateFields()) as $k) {
+                $val = $get($k, null);
+                $replace['#' . $k . '#'] = is_numeric($val) ? round(floatval($val), 1) : '-';
+                $h = $hist($k);
+                $replace['#' . $k . '_id#'] = $h['id'];
+                $replace['#' . $k . '_history_class#'] = $h['class'];
+            }
+
+            // Ratio de couverture PV du jour : valeur officielle de l'API si
+            // disponible (cover_rate_day), sinon repli sur un calcul local.
+            $coverRateDay = $get('cover_rate_day', null);
+            if (is_numeric($coverRateDay)) {
+                $replace['#autoconso_pct#'] = min(100, round(floatval($coverRateDay)));
+            } else {
+                $consDay = floatval($get('consumption_day', 0));
+                $consPvDay = floatval($get('consumption_from_pv_day', 0));
+                $replace['#autoconso_pct#'] = ($consDay > 0) ? min(100, round(($consPvDay / $consDay) * 100)) : 0;
+            }
 
             // Le réseau importe ou exporte actuellement ? (grid_power > 0 = import, classique sur ce type d'API)
             $gridPower = floatval($get('grid_power', 0));
@@ -688,6 +964,8 @@ class izypower extends eqLogic {
 
             $producing = floatval($get('production_power', 0)) > 0;
             $replace['#sun_class#'] = $producing ? 'izy-sun-active' : '';
+
+            $replace['#upgrade_badge#'] = (intval($get('upgrade_available', 0)) == 1) ? ' · ⬆️ MàJ dispo' : '';
 
             return template_replace($replace, getTemplate('core', $version, 'station', 'izypower'));
         }
@@ -706,6 +984,10 @@ class izypower extends eqLogic {
             $replace['#online_class#'] = $online ? 'izy-online' : 'izy-offline';
             $replace['#online_label#'] = $online ? 'En ligne' : 'Hors ligne';
             $replace['#meter_power#'] = round(floatval($get('meter_power', 0)));
+            $replace['#upgrade_badge#'] = (intval($get('upgrade_available', 0)) == 1) ? ' · ⬆️ MàJ dispo' : '';
+
+            // Capteurs CT rattachés à ce compteur, détectés dynamiquement (ct_power_ct2, ...)
+            $replace['#ct_rows#'] = $this->buildCtRowsHtml();
 
             return template_replace($replace, getTemplate('core', $version, 'meter', 'izypower'));
         }
@@ -721,6 +1003,19 @@ class izypower extends eqLogic {
         $online = (intval($get('online_state', 0)) == 1);
         $replace['#online_class#'] = $online ? 'izy-online' : 'izy-offline';
         $replace['#online_label#'] = $online ? 'En ligne' : 'Hors ligne';
+        $replace['#upgrade_badge#'] = (intval($get('upgrade_available', 0)) == 1) ? ' · ⬆️ MàJ dispo' : '';
+
+        // Température : uniquement présente sur les onduleurs ('vm')
+        $tempCmd = $this->getCmd(null, 'temperature');
+        if (is_object($tempCmd)) {
+            $tempVal = $get('temperature', '-');
+            $tempDisplay = is_numeric($tempVal) ? round(floatval($tempVal), 1) : $tempVal;
+            $h = $hist('temperature');
+            $replace['#temperature_row#'] = '<div class="izy-k">🌡️ Température</div>'
+                . '<div class="izy-v ' . $h['class'] . '" data-cmd_id="' . $h['id'] . '">' . $tempDisplay . ' °C</div>';
+        } else {
+            $replace['#temperature_row#'] = '';
+        }
 
         // Commandes de puissance par chaîne PV, détectées dynamiquement (pv_power_pv1, pv_power_pv2, ...)
         $pvRows = '';
@@ -740,6 +1035,25 @@ class izypower extends eqLogic {
         $replace['#pv_total#'] = round($totalPv);
 
         return template_replace($replace, getTemplate('core', $version, 'inverter', 'izypower'));
+    }
+
+    /**
+     * Construit le HTML des lignes de la grille du widget meter pour les
+     * commandes de pince CT dynamiques (ct_power_ct2, ct_power_ct3, ...).
+     */
+    private function buildCtRowsHtml() {
+        $rows = '';
+        foreach ($this->getCmd('info') as $cmd) {
+            if (strpos($cmd->getLogicalId(), 'ct_power_') !== 0) {
+                continue;
+            }
+            $val = floatval($cmd->execCmd());
+            $label = strtoupper(str_replace('ct_power_', '', $cmd->getLogicalId()));
+            $histClass = ($cmd->getIsHistorized() == 1) ? 'cursor history' : '';
+            $rows .= '<div class="izy-k">🔌 ' . $label . '</div>'
+                   . '<div class="izy-v ' . $histClass . '" data-cmd_id="' . $cmd->getId() . '">' . round($val) . ' W</div>';
+        }
+        return $rows;
     }
 
     public function preInsert() {
