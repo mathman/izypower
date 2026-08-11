@@ -34,15 +34,6 @@ try {
         ajax::success($nb);
     }
 
-    if (init('action') == 'pullStation') {
-        $eqLogic = eqLogic::byId(init('id'));
-        if (!is_object($eqLogic)) {
-            throw new Exception(__('Équipement introuvable : ', __FILE__) . init('id'));
-        }
-        $eqLogic->pull();
-        ajax::success();
-    }
-
     throw new Exception(__('Aucune méthode correspondante à', __FILE__) . ' : ' . init('action'));
     /*     * *********Catch exeption*************** */
 }
