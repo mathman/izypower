@@ -24,6 +24,8 @@ class IzypowerApi {
     const DEVICE_TEMP_URL      = self::BASE_URL . '/api/report/device/data/%s?searchTime=%s&timeType=day&dataFlag=temp';
     const DEVICE_UPGRADE_URL   = self::BASE_URL . '/api/v3/device/upgrade/%s';
     const LAYOUT_POWER_URL     = self::BASE_URL . '/api/report/layoutPower/%s?searchTime=%s&isV2=%s';
+    const METER_BASE_INFO_URL  = self::BASE_URL . '/api/v2/device/baseInfo/%s';
+    const METER_CONTROL_URL    = self::BASE_URL . '/api/v2/device/meter/control/%s';
 
     const TOKEN_HEADER    = 'x-tts-access-token';
     const APP_PLATFORM    = 'izy';
@@ -195,6 +197,28 @@ class IzypowerApi {
         return $this->authenticatedGet($url);
     }
 
+    /**
+     * Infos de base d'un équipement, par ID (deviceId)
+     */
+    public function getMeterBaseInfo($deviceId) {
+        $url = sprintf(self::METER_BASE_INFO_URL, $deviceId);
+        return $this->authenticatedGet($url);
+    }
+
+    /**
+     * Active/désactive le contrôle d'injection réseau d'un compteur et fixe
+     * le seuil d'injection autorisé (feedThreshold, en W ; valeur négative =
+     * puissance exportée autorisée, ex. -300 = 300 W max renvoyés au réseau).
+     */
+    public function setMeterControl($serialNumber, $isControl, $feedThreshold) {
+        $url = sprintf(self::METER_CONTROL_URL, $serialNumber);
+        $body = json_encode(array(
+            'isControl'     => (bool) $isControl,
+            'feedThreshold' => (int) $feedThreshold,
+        ));
+        return $this->authenticatedPost($url, $body);
+    }
+
     /* ===================== COEUR HTTP ===================== */
 
     /**
@@ -245,6 +269,64 @@ class IzypowerApi {
                 log::add('izypower', 'debug', 'Erreur appel API (tentative ' . $attempt . '/' . $maxAttempts . ') : ' . $e->getMessage());
                 if ($attempt < $maxAttempts) {
                     // Backoff exponentiel + gigue, plafonné pour rester raisonnable en PHP synchrone
+                    $wait = min(5, (1 * pow(2, $attempt - 1)) + (mt_rand(0, 500) / 1000));
+                    usleep((int) ($wait * 1000000));
+                }
+            }
+        }
+
+        throw $lastException;
+    }
+
+    /**
+     * POST authentifié (JSON) avec la même gestion de re-login/retry que
+     * authenticatedGet(). Utilisé pour les appels d'écriture (ex. contrôle
+     * d'injection réseau).
+     */
+    private function authenticatedPost($url, $body, $maxAttempts = 3) {
+        $attempt = 0;
+        $lastException = null;
+
+        while ($attempt < $maxAttempts) {
+            $attempt++;
+            try {
+                $this->ensureLoggedIn();
+
+                $headers = array(
+                    self::TOKEN_HEADER . ': ' . $this->token,
+                    'Content-Type: application/json',
+                    'Accept-Language: ' . $this->lang,
+                    'app-platform: ' . self::APP_PLATFORM,
+                );
+
+                list($status, $responseBody) = $this->httpRequestWithStatus('POST', $url, $headers, $body);
+
+                if ($status === 401) {
+                    log::add('izypower', 'debug', 'Token expiré (401), reconnexion (tentative ' . $attempt . '/' . $maxAttempts . ')');
+                    $this->token = null;
+                    $this->ensureLoggedIn();
+                    continue;
+                }
+
+                if ($status >= 500 && $status < 600) {
+                    throw new Exception('Izypower : serveur indisponible (HTTP ' . $status . ')');
+                }
+
+                if ($status !== 200) {
+                    throw new Exception('Izypower : HTTP ' . $status . ' sur ' . $url);
+                }
+
+                $data = json_decode($responseBody, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    throw new Exception('Izypower : réponse JSON invalide');
+                }
+
+                return $data;
+
+            } catch (Exception $e) {
+                $lastException = $e;
+                log::add('izypower', 'debug', 'Erreur appel API POST (tentative ' . $attempt . '/' . $maxAttempts . ') : ' . $e->getMessage());
+                if ($attempt < $maxAttempts) {
                     $wait = min(5, (1 * pow(2, $attempt - 1)) + (mt_rand(0, 500) / 1000));
                     usleep((int) ($wait * 1000000));
                 }
