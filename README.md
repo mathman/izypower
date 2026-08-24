@@ -1,6 +1,6 @@
 # Plugin Izypower pour Jeedom
 
-Suivi de vos centrales photovoltaïques **Izypower** (Materfrance) dans Jeedom : puissance, énergie, onduleurs, compteurs — en lecture seule, via le cloud Izypower.
+Suivi de vos centrales photovoltaïques **Izypower** (Materfrance) dans Jeedom : puissance, énergie, onduleurs, compteurs, via le cloud Izypower. Propose aussi le pilotage du contrôle d'injection réseau (anti-retour) sur les compteurs compatibles.
 
 > ⚠️ Ce plugin n'est ni développé, ni affilié, ni soutenu par Materfrance / Izypower. Toutes les données transitent par leur cloud (aucun accès local à l'installation).
 
@@ -11,11 +11,11 @@ Suivi de vos centrales photovoltaïques **Izypower** (Materfrance) dans Jeedom :
   - Puissances instantanées : production PV, réseau, consommation.
   - Énergie : consommation, consommation depuis PV, import/export réseau — sur les périodes jour / mois / année / total.
   - Infos de diagnostic centrale : capacité installée, nombre d'équipements, statut, dernière mise à jour.
-  - Par onduleur : état en ligne, version logicielle, Wi-Fi (réseau, signal, IP), puissance par chaîne PV (PV1, PV2...).
-  - Par compteur : tension, fréquence, énergie importée/exportée, puissance réseau instantanée.
+  - Par onduleur : état en ligne, version logicielle, Wi-Fi (réseau, signal, IP), puissance par chaîne PV (PV1, PV2...), température (onduleurs `vm`).
+  - Par compteur : tension, fréquence, énergie importée/exportée, puissance réseau instantanée, état du contrôle d'injection réseau et seuil autorisé.
+- **Contrôle d'injection réseau (anti-retour)** sur les compteurs compatibles : active/désactive le plafonnement de la puissance réinjectée sur le réseau et règle son seuil (en W), directement depuis Jeedom (commande ou scénario).
 - **Widgets dashboard dédiés** pour centrale, onduleur et compteur.
 - Compatibilité avec les widgets génériques Jeedom (`POWER`, `CONSO_TOTAL`, `PRESENCE`) pour s'intégrer au tableau de bord énergie.
-- Plugin **lecture seule** : aucune commande exécutable n'est proposée depuis Jeedom.
 
 ## Installation
 
@@ -37,15 +37,13 @@ Les valeurs se rafraîchissent ensuite automatiquement toutes les 3 minutes. Un 
 | Fichier | Rôle |
 |---|---|
 | [core/class/izypower.class.php](core/class/izypower.class.php) | `eqLogic` du plugin : cron, synchronisation des centrales/onduleurs/compteurs, création des commandes, rendu des widgets dashboard. |
-| [core/class/IzypowerApi.class.php](core/class/IzypowerApi.class.php) | Client HTTP pour l'API cloud Izypower : authentification (JWT), récupération des centrales, rapports d'énergie, équipements, Wi-Fi. Reconstruit à partir de la logique de l'intégration Home Assistant `izypower_cloud`. |
+| [3rdparty/IzypowerApi.class.php](3rdparty/IzypowerApi.class.php) | Client HTTP pour l'API cloud Izypower : authentification (JWT), récupération des centrales, rapports d'énergie, équipements, Wi-Fi, et pilotage du contrôle d'injection réseau. |
 | [core/ajax/izypower.ajax.php](core/ajax/izypower.ajax.php) | Point d'entrée AJAX (bouton "Synchroniser les centrales"). |
 | [core/template/dashboard/](core/template/dashboard/) | Templates HTML des widgets (station / inverter / meter). |
 | [plugin_info/configuration.php](plugin_info/configuration.php) | Page de configuration du plugin (identifiants, bouton de synchronisation). |
 
 ## Limitations connues
 
-- Lecture seule : impossible de piloter une centrale/un onduleur depuis Jeedom.
-- Fréquence de rafraîchissement limitée à celle du cloud Izypower (~3 minutes), pas de flux temps réel local.
 - Le suivi batterie n'est pas intégré au plugin, faute de matériel disponible pour le développer et le tester.
 
 ## Licence

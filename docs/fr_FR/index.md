@@ -11,7 +11,9 @@ pour les onduleurs Izypower à ce jour. Le rafraîchissement n'est donc jamais p
 3 minutes (c'est la fréquence à laquelle le cloud Izypower met lui-même ses données à jour, comme
 dans l'application officielle).
 
-Le plugin est **lecture seule** : aucune action (pilotage, réglage) n'est possible depuis Jeedom.
+La remontée des données (production, consommation, énergie...) ne permet aucune action côté onduleur ou centrale.
+Seul le **contrôle d'injection réseau** d'un compteur compatible peut être piloté depuis Jeedom (activer/désactiver,
+régler le seuil).
 
 ## Prérequis
 
@@ -59,6 +61,7 @@ qu'un équipement par onduleur et par compteur qui lui sont rattachés. Un renom
 - Version Logicielle
 - Signal Wi-Fi (dBm), Réseau Wi-Fi, Adresse IP
 - Puissance par chaîne PV, détectée dynamiquement (PV1, PV2, ...)
+- Température (onduleurs de type `vm` uniquement)
 
 ### Équipement "Compteur"
 
@@ -69,23 +72,30 @@ qu'un équipement par onduleur et par compteur qui lui sont rattachés. Un renom
 - Fréquence Réseau (Hz)
 - Énergie Importée / Exportée (kWh)
 - Puissance Réseau (W)
+- Puissance par pince CT, détectée dynamiquement (CT2, CT3, ...)
+- Contrôle Injection Actif (0/1) et Seuil Injection Autorisé (W)
+
+## Actions disponibles (compteur)
+
+Sur un équipement "Compteur" compatible, trois commandes de type action permettent de piloter le
+contrôle d'injection réseau (anti-retour), c'est-à-dire le plafonnement de la puissance réinjectée
+sur le réseau public :
+
+- **Activer le Contrôle d'Injection** : active le plafonnement, au seuil actuellement connu.
+- **Désactiver le Contrôle d'Injection** : désactive le plafonnement.
+- **Seuil d'Injection Réseau** : règle le seuil de puissance exportée autorisée et active le contrôle si besoin.
 
 ## Widgets dashboard
 
 Chaque type d'équipement (centrale / onduleur / compteur) dispose de son propre widget dédié sur
 le dashboard Jeedom, avec un rendu adapté (ratio d'autoconsommation et sens du flux réseau pour une
-centrale, état en ligne et détail par chaîne PV pour un onduleur, etc.). Les commandes principales
-sont aussi compatibles avec les widgets génériques Jeedom (`POWER`, `CONSO_TOTAL`, `PRESENCE`) pour
-s'intégrer au tableau de bord énergie.
+centrale, état en ligne et détail par chaîne PV pour un onduleur, état et réglage du contrôle
+d'injection pour un compteur, etc.).
 
 ## Limites connues
 
 - Pas de suivi batterie : non intégré, faute de matériel disponible pour le développer et le
   tester.
-- Pas de contrôle à distance (lecture seule) : aucune commande exécutable n'est proposée depuis
-  Jeedom.
-- Rafraîchissement fixe à 3 minutes (aligné sur le cron du plugin et sur la fréquence de mise à
-  jour du cloud Izypower).
 
 ## Dépannage
 
