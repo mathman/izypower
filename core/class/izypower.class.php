@@ -95,7 +95,7 @@ class izypower extends eqLogic {
                 $created++;
             }
             $eqLogic->save();
-            $eqLogic->buildCommands();
+            $eqLogic->buildStationCommands();
 
             // Crée les onduleurs/compteurs manquants pour cette centrale.
             try {
@@ -151,6 +151,9 @@ class izypower extends eqLogic {
             $deviceEq = self::byLogicalId($deviceSn, 'izypower');
             $isNewDevice = !is_object($deviceEq);
 
+            // ID interne numérique (deviceId), distinct du numéro de série.
+            $numericDeviceId = isset($deviceRecord['deviceId']) ? $deviceRecord['deviceId'] : null;
+
             if ($isNewDevice) {
                 $deviceName = isset($deviceRecord['deviceName']) ? $deviceRecord['deviceName'] : $deviceSn;
 
@@ -163,21 +166,22 @@ class izypower extends eqLogic {
                 $deviceEq->setName($deviceName . ' (Izypower)');
                 $deviceEq->setObject_id($this->getObject_id());
                 $deviceEq->save();
-
-                if ($deviceType !== 'meter') {
-                    $deviceEq->buildDeviceCommands();
-                }
                 $created++;
             }
 
-            if ($deviceType === 'vm') {
-                $deviceEq->buildTemperatureCommand();
+            if ($numericDeviceId !== null && $deviceEq->getConfiguration('device_id') != $numericDeviceId) {
+                $deviceEq->setConfiguration('device_id', $numericDeviceId);
+                $deviceEq->save();
             }
+
+            // Commandes fixes communes (online_state, wifi...), et température
+            // pour les onduleurs 'vm' uniquement.
+            $deviceEq->buildDeviceCommands($deviceType === 'vm');
 
             if ($deviceType === 'meter') {
                 // Noms des pinces CT rattachées à ce compteur (CT2, CT3, ...),
                 // transmis à buildMeterCommands() qui crée les commandes CT
-                // correspondantes (buildCtCommands) si besoin.
+                // correspondantes si besoin.
                 $ctNames = array();
                 foreach ($ctItems as $item) {
                     $itemPv = isset($item['pv']) ? strtolower($item['pv']) : '';
@@ -305,7 +309,7 @@ class izypower extends eqLogic {
     /**
      * Crée les commandes manquantes pour cet eqLogic (idempotent).
      */
-    public function buildCommands() {
+    public function buildStationCommands() {
         foreach (self::getPowerFields() as $logicalId => $def) {
             list($field, $label, $unit) = $def;
             $this->buildSensorCommand($logicalId, $label, $unit, 'power');
@@ -332,7 +336,96 @@ class izypower extends eqLogic {
         $this->save();
     }
 
-    private function buildSensorCommand($logicalId, $name, $unit, $generic_type_suffix, $isString = false) {
+    /* ===================== COMMANDES ONDULEUR (équipement device_type=inverter) ===================== */
+
+    /**
+     * Définition des commandes fixes (hors PV, créées dynamiquement) pour un onduleur.
+     * clé logique => [libellé, unité|null, type Jeedom: 'string'|'numeric']
+     */
+    public static function getDeviceFields() {
+        return array(
+            'online_state'      => array('En Ligne',                null,   'numeric'),
+            'software_version'  => array('Version Logicielle',      null,   'string'),
+            'wifi_signal'       => array('Signal Wi-Fi',             'dBm',  'numeric'),
+            'wifi_network'      => array('Réseau Wi-Fi',             null,   'string'),
+            'ip_address'        => array('Adresse IP',               null,   'string'),
+            'upgrade_available' => array('Mise à Jour Disponible',   null,   'numeric'),
+        );
+    }
+
+    /**
+     * Crée/met à jour les commandes fixes communes à tous les équipements
+     * (onduleurs et compteurs) : online_state, software_version, wifi...
+     * (idempotent). $includeTemperature n'est à true que pour les onduleurs
+     * de type 'vm' (seuls à remonter une température).
+     */
+    public function buildDeviceCommands($includeTemperature = false) {
+        foreach (self::getDeviceFields() as $logicalId => $def) {
+            list($label, $unit, $type) = $def;
+            $genericType = ($logicalId === 'online_state') ? 'PRESENCE' : null;
+            $this->buildSensorCommand($logicalId, $label, $unit, 'info', $type !== 'numeric', $genericType);
+        }
+        if ($includeTemperature) {
+            $this->buildSensorCommand('temperature', 'Température', '°C', 'info', false, 'TEMPERATURE');
+        }
+        $this->save();
+    }
+
+    /**
+     * Crée/met à jour une commande de puissance par chaîne PV détectée (PV1, PV2, ...).
+     */
+    public function buildPvCommands($pvNames) {
+        foreach ($pvNames as $pvName) {
+            $logicalId = 'pv_power_' . strtolower($pvName);
+            $this->buildSensorCommand($logicalId, 'Puissance ' . $pvName, 'W', 'info');
+        }
+        if (!empty($pvNames)) {
+            $this->save();
+        }
+    }
+
+    /* ===================== COMMANDES COMPTEURS (équipement device_type=meter) ===================== */
+
+    /**
+     * Crée les commandes spécifiques à un équipement compteur (meter) :
+     * tension, fréquence, énergie +/-, contrôle d'injection réseau.
+     * Crée aussi, le cas échéant, les commandes de pince CT détectées sur ce compteur.
+     */
+    public function buildMeterCommands($ctNames = array()) {
+        // Commandes spécifiques compteur.
+        $meterCmds = array(
+            'meter_voltage'           => array('Tension Réseau',            'V',   'numeric'),
+            'meter_frequency'         => array('Fréquence Réseau',          'Hz',  'numeric'),
+            'meter_energy_p'          => array('Énergie Importée',          'kWh', 'numeric'),
+            'meter_energy_n'          => array('Énergie Exportée',          'kWh', 'numeric'),
+            'meter_power'             => array('Puissance Réseau',          'W',   'numeric'),
+            'injection_control_state' => array('Contrôle Injection Actif',  null,  'numeric'),
+            'injection_limit_state'   => array('Seuil Injection Autorisé',  'W',   'numeric'),
+        );
+        foreach ($meterCmds as $logicalId => $def) {
+            list($label, $unit) = $def;
+            $this->buildSensorCommand($logicalId, $label, $unit, 'info');
+        }
+
+        $this->buildActionCommand('injection_control_on', 'Activer le Contrôle d\'Injection', 'other');
+        $this->buildActionCommand('injection_control_off', 'Désactiver le Contrôle d\'Injection', 'other');
+        $this->buildActionCommand('injection_limit_set', 'Seuil d\'Injection Réseau', 'slider', 'W', 0, 36000, 50);
+
+        if (!empty($ctNames)) {
+            foreach ($ctNames as $ctName) {
+                $logicalId = 'ct_power_' . strtolower($ctName);
+                $this->buildSensorCommand($logicalId, 'Puissance ' . strtoupper($ctName), 'W', 'info');
+            }
+        }
+        $this->save();
+    }
+
+    /**
+     * Crée/met à jour une commande capteur (idempotent). Fonction générique
+     * utilisée par tous les points du plugin qui créent des commandes 'info'
+     * (station, onduleur, compteur, PV, CT...).
+     */
+    private function buildSensorCommand($logicalId, $name, $unit, $generic_type_suffix, $isString = false, $genericType = null) {
         $cmd = $this->getCmd(null, $logicalId);
         if (!is_object($cmd)) {
             $cmd = new izypowerCmd();
@@ -347,13 +440,44 @@ class izypower extends eqLogic {
 
         // Génériques Jeedom standards quand pertinents (pour compatibilité
         // avec les widgets et le tableau de bord énergie de Jeedom)
-        if ($logicalId === 'production_power') {
+        if ($genericType !== null) {
+            $cmd->setGeneric_type($genericType);
+        } elseif ($logicalId === 'production_power') {
             $cmd->setGeneric_type('POWER');
         } elseif (in_array($logicalId, array('consumption_total', 'grid_total_import', 'grid_total_export'))) {
             $cmd->setGeneric_type('CONSO_TOTAL');
         }
 
         $cmd->save();
+        return $cmd;
+    }
+
+    /**
+     * Crée une commande action (idempotent). Pour les sliders, min/max/step
+     * sont posés en configuration de la commande (lus par le widget standard
+     * Jeedom pour afficher le curseur).
+     */
+    private function buildActionCommand($logicalId, $name, $subType, $unit = null, $min = null, $max = null, $step = null) {
+        $cmd = $this->getCmd(null, $logicalId);
+        if (!is_object($cmd)) {
+            $cmd = new izypowerCmd();
+            $cmd->setLogicalId($logicalId);
+            $cmd->setEqLogic_id($this->getId());
+            $cmd->setName($name);
+        }
+        $cmd->setType('action');
+        $cmd->setSubType($subType);
+        if ($unit !== null) {
+            $cmd->setUnite($unit);
+        }
+        $cmd->setIsVisible(1);
+        if ($subType === 'slider') {
+            $cmd->setConfiguration('minValue', $min);
+            $cmd->setConfiguration('maxValue', $max);
+            $cmd->setConfiguration('step', $step);
+        }
+        $cmd->save();
+        return $cmd;
     }
 
     /* ===================== SYNCHRO DES VALEURS ===================== */
@@ -564,6 +688,24 @@ class izypower extends eqLogic {
                 if ($gridPower !== null) {
                     $deviceEq->updateCmdValue('meter_power', $gridPower);
                 }
+
+                // État du contrôle d'injection réseau (anti-retour), lu via
+                // l'ID interne de l'équipement (deviceId).
+                $meterDeviceId = $deviceEq->getConfiguration('device_id');
+                if ($meterDeviceId) {
+                    try {
+                        $baseInfo = $api->getMeterBaseInfo($meterDeviceId);
+                        log::add('izypower', 'debug', 'Retour API getMeterBaseInfo (device ' . $meterDeviceId . ') : ' . json_encode($baseInfo));
+                        $meterExtra = self::extractMeterExtra($baseInfo);
+                        $deviceEq->updateCmdValue('injection_control_state', !empty($meterExtra['isControl']) ? 1 : 0);
+                        if (isset($meterExtra['feedThreshold']) && is_numeric($meterExtra['feedThreshold'])) {
+                            $deviceEq->updateCmdValue('injection_limit_state', abs(intval($meterExtra['feedThreshold'])));
+                        }
+                    } catch (Exception $e) {
+                        log::add('izypower', 'debug', 'Contrôle injection indisponible pour ' . $deviceSn . ' : ' . $e->getMessage());
+                    }
+                }
+
                 log::add('izypower', 'info', 'Compteur "' . $deviceEq->getName() . '" mis à jour : ' . $onlineLabel);
             } else {
                 // Puissance par chaîne PV pour les onduleurs
@@ -592,6 +734,53 @@ class izypower extends eqLogic {
                 }
             }
 			$deviceEq->refreshWidget();
+        }
+    }
+    
+    /**
+     * Met à jour la valeur des commandes de puissance par chaîne PV déjà
+     * existantes : appelée depuis pullDevices() à chaque cron.
+     * $pvPowers est un tableau ['PV1' => 350, 'PV2' => 280, ...].
+     */
+    public function updatePvValues($pvPowers) {
+        foreach ($pvPowers as $pvName => $pvPower) {
+            $this->updateCmdValue('pv_power_' . strtolower($pvName), $pvPower);
+        }
+    }
+
+    /**
+     * Met à jour la valeur des commandes de pince CT déjà existantes.
+     * $ctPowers est un tableau ['CT2' => 120, 'CT3' => -45, ...].
+     */
+    public function updateCtValues($ctPowers) {
+        foreach ($ctPowers as $ctName => $ctPower) {
+            $this->updateCmdValue('ct_power_' . strtolower($ctName), $ctPower);
+        }
+    }
+
+    /**
+     * Met à jour les commandes spécifiques du compteur depuis les dataDtos
+     * (tableau de {key, value} renvoyé dans le device_record).
+     * Les valeurs sont des strings avec unité ("58.5V", "50.01Hz", "0.93kWh") —
+     * on extrait la partie numérique.
+     */
+    public function updateMeterValues($dataDtos) {
+        // Mapping clé dataDtos => logicalId de commande
+        $keyMap = array(
+            'v_ac_all'     => 'meter_voltage',
+            'freq'         => 'meter_frequency',
+            'energy_p_all' => 'meter_energy_p',
+            'energy_n_all' => 'meter_energy_n',
+        );
+        foreach ($dataDtos as $dto) {
+            $key   = isset($dto['key'])   ? $dto['key']   : null;
+            $value = isset($dto['value']) ? $dto['value'] : null;
+            if ($key === null || $value === null || !isset($keyMap[$key])) {
+                continue;
+            }
+            // Extraire la valeur numérique (ex: "58.5V" → 58.5, "0.93kWh" → 0.93)
+            $numericValue = floatval(preg_replace('/[^0-9.\-]/', '', $value));
+            $this->updateCmdValue($keyMap[$key], $numericValue);
         }
     }
 
@@ -635,6 +824,16 @@ class izypower extends eqLogic {
     }
 
     /**
+     * Extrait le noeud data.meter_extra de la réponse getMeterBaseInfo()
+     * (isControl / feedThreshold), qui décrit l'état du contrôle d'injection
+     * réseau du compteur.
+     */
+    private static function extractMeterExtra($baseInfo) {
+        $data = isset($baseInfo['data']) && is_array($baseInfo['data']) ? $baseInfo['data'] : array();
+        return isset($data['meter_extra']) && is_array($data['meter_extra']) ? $data['meter_extra'] : array();
+    }
+
+    /**
      * Extrait la dernière valeur de température de la réponse
      * getDeviceTemp() : data['data'][0]['data'][-1]['val'].
      * Retourne null si la structure est absente/vide (ex. équipement hors ligne).
@@ -652,229 +851,27 @@ class izypower extends eqLogic {
         return isset($last['val']) ? $last['val'] : null;
     }
 
-    /* ===================== COMMANDES ONDULEUR (équipement device_type=inverter) ===================== */
-
     /**
-     * Définition des commandes fixes (hors PV, créées dynamiquement) pour un onduleur.
-     * clé logique => [libellé, unité|null, type Jeedom: 'string'|'numeric']
+     * Active/désactive le contrôle d'injection réseau (anti-retour) de ce
+     * compteur et fixe le seuil d'injection autorisé.
      */
-    public static function getDeviceFields() {
-        return array(
-            'online_state'      => array('En Ligne',                null,   'numeric'),
-            'software_version'  => array('Version Logicielle',      null,   'string'),
-            'wifi_signal'       => array('Signal Wi-Fi',             'dBm',  'numeric'),
-            'wifi_network'      => array('Réseau Wi-Fi',             null,   'string'),
-            'ip_address'        => array('Adresse IP',               null,   'string'),
-            'upgrade_available' => array('Mise à Jour Disponible',   null,   'numeric'),
-        );
-    }
+    public function setMeterInjectionControl($isControl, $requestedLimit = null) {
+        $serialNumber = $this->getLogicalId();
 
-    /**
-     * Crée les commandes fixes manquantes pour cet équipement onduleur (idempotent).
-     * Les commandes de puissance par chaîne PV sont gérées séparément par
-     * buildPvCommands(), car leur nombre varie selon l'onduleur.
-     */
-    public function buildDeviceCommands() {
-        foreach (self::getDeviceFields() as $logicalId => $def) {
-            list($label, $unit, $type) = $def;
-            $cmd = $this->getCmd(null, $logicalId);
-            if (!is_object($cmd)) {
-                $cmd = new izypowerCmd();
-                $cmd->setLogicalId($logicalId);
-                $cmd->setEqLogic_id($this->getId());
-                $cmd->setName($label);
-            }
-            $cmd->setType('info');
-            $cmd->setSubType($type === 'numeric' ? 'numeric' : 'string');
-            $cmd->setUnite($unit);
-            $cmd->setIsVisible(1);
+        if ($requestedLimit !== null) {
+            $requestedLimit = abs(intval($requestedLimit));
+        } else {
+            $limitStateCmd = $this->getCmd(null, 'injection_limit_state');
+            $requestedLimit = (is_object($limitStateCmd) && is_numeric($limitStateCmd->execCmd())) ? abs(intval($limitStateCmd->execCmd())) : 300;
+        }
 
-            if ($logicalId === 'online_state') {
-                $cmd->setGeneric_type('PRESENCE');
-            }
+        $api = self::getApiClient();
+        // feedThreshold est négatif côté API (puissance exportée autorisée).
+        $api->setMeterControl($serialNumber, $isControl, -$requestedLimit);
+        log::add('izypower', 'info', 'Contrôle injection réseau "' . $this->getName() . '" : actif=' . ($isControl ? 'oui' : 'non') . ', seuil=' . $requestedLimit . ' W');
 
-            $cmd->save();
-        }
-        $this->save();
-    }
-
-    /**
-     * Crée la commande de température.
-     */
-    public function buildTemperatureCommand() {
-        $cmd = $this->getCmd(null, 'temperature');
-        if (!is_object($cmd)) {
-            $cmd = new izypowerCmd();
-            $cmd->setLogicalId('temperature');
-            $cmd->setEqLogic_id($this->getId());
-            $cmd->setName('Température');
-        }
-        $cmd->setType('info');
-        $cmd->setSubType('numeric');
-        $cmd->setUnite('°C');
-        $cmd->setIsVisible(1);
-        $cmd->setGeneric_type('TEMPERATURE');
-        $cmd->save();
-        $this->save();
-    }
-
-    /**
-     * Crée uniquement une commande de puissance par chaîne PV détectée (PV1, PV2, ...).
-     */
-    public function buildPvCommands($pvNames) {
-        $created = 0;
-        foreach ($pvNames as $pvName) {
-            $logicalId = 'pv_power_' . strtolower($pvName);
-            $cmd = $this->getCmd(null, $logicalId);
-            if (is_object($cmd)) {
-                continue;
-            }
-            $cmd = new izypowerCmd();
-            $cmd->setLogicalId($logicalId);
-            $cmd->setEqLogic_id($this->getId());
-            $cmd->setName('Puissance ' . $pvName);
-            $cmd->setType('info');
-            $cmd->setSubType('numeric');
-            $cmd->setUnite('W');
-            $cmd->setIsVisible(1);
-            $cmd->save();
-            $created++;
-        }
-        if ($created > 0) {
-            $this->save();
-        }
-    }
-
-    /**
-     * Met à jour la valeur des commandes de puissance par chaîne PV déjà
-     * existantes : appelée depuis pullDevices() à chaque cron.
-     * $pvPowers est un tableau ['PV1' => 350, 'PV2' => 280, ...]. Une chaîne
-     * dont la commande n'existe pas encore est ignorée (elle sera créée à la
-     * prochaine synchronisation des centrales).
-     */
-    public function updatePvValues($pvPowers) {
-        foreach ($pvPowers as $pvName => $pvPower) {
-            $this->updateCmdValue('pv_power_' . strtolower($pvName), $pvPower);
-        }
-    }
-
-    /**
-     * Crée uniquement une commande de puissance par pince CT détectée (CT2, CT3, ...).
-     */
-    public function buildCtCommands($ctNames) {
-        $created = 0;
-        foreach ($ctNames as $ctName) {
-            $logicalId = 'ct_power_' . strtolower($ctName);
-            $cmd = $this->getCmd(null, $logicalId);
-            if (is_object($cmd)) {
-                continue;
-            }
-            $cmd = new izypowerCmd();
-            $cmd->setLogicalId($logicalId);
-            $cmd->setEqLogic_id($this->getId());
-            $cmd->setName('Puissance ' . strtoupper($ctName));
-            $cmd->setType('info');
-            $cmd->setSubType('numeric');
-            $cmd->setUnite('W');
-            $cmd->setIsVisible(1);
-            $cmd->save();
-            $created++;
-        }
-        if ($created > 0) {
-            $this->save();
-        }
-    }
-
-    /**
-     * Met à jour la valeur des commandes de pince CT déjà existantes.
-     * $ctPowers est un tableau ['CT2' => 120, 'CT3' => -45, ...].
-     */
-    public function updateCtValues($ctPowers) {
-        foreach ($ctPowers as $ctName => $ctPower) {
-            $this->updateCmdValue('ct_power_' . strtolower($ctName), $ctPower);
-        }
-    }
-
-    /**
-     * Crée les commandes fixes pour un équipement compteur (meter).
-     * Commandes communes (online_state, software_version, wifi...) + commandes
-     * spécifiques compteur (tension, fréquence, énergie +/-). Crée aussi, le
-     * cas échéant, les commandes de pince CT détectées sur ce compteur
-     * (cf. buildCtCommands(), appelée depuis syncDevices()).
-     */
-    public function buildMeterCommands($ctNames = array()) {
-        // Commandes communes avec les onduleurs
-        foreach (self::getDeviceFields() as $logicalId => $def) {
-            list($label, $unit, $type) = $def;
-            $cmd = $this->getCmd(null, $logicalId);
-            if (!is_object($cmd)) {
-                $cmd = new izypowerCmd();
-                $cmd->setLogicalId($logicalId);
-                $cmd->setEqLogic_id($this->getId());
-                $cmd->setName($label);
-            }
-            $cmd->setType('info');
-            $cmd->setSubType($type === 'numeric' ? 'numeric' : 'string');
-            $cmd->setUnite($unit);
-            $cmd->setIsVisible(1);
-            if ($logicalId === 'online_state') {
-                $cmd->setGeneric_type('PRESENCE');
-            }
-            $cmd->save();
-        }
-        // Commandes spécifiques compteur
-        $meterCmds = array(
-            'meter_voltage'    => array('Tension Réseau',    'V',   'numeric'),
-            'meter_frequency'  => array('Fréquence Réseau',  'Hz',  'numeric'),
-            'meter_energy_p'   => array('Énergie Importée',  'kWh', 'numeric'),
-            'meter_energy_n'   => array('Énergie Exportée',  'kWh', 'numeric'),
-            'meter_power'      => array('Puissance Réseau',  'W',   'numeric'),
-        );
-        foreach ($meterCmds as $logicalId => $def) {
-            list($label, $unit, $type) = $def;
-            $cmd = $this->getCmd(null, $logicalId);
-            if (!is_object($cmd)) {
-                $cmd = new izypowerCmd();
-                $cmd->setLogicalId($logicalId);
-                $cmd->setEqLogic_id($this->getId());
-                $cmd->setName($label);
-            }
-            $cmd->setType('info');
-            $cmd->setSubType('numeric');
-            $cmd->setUnite($unit);
-            $cmd->setIsVisible(1);
-            $cmd->save();
-        }
-        $this->save();
-        if (!empty($ctNames)) {
-            $this->buildCtCommands($ctNames);
-        }
-    }
-
-    /**
-     * Met à jour les commandes spécifiques du compteur depuis les dataDtos
-     * (tableau de {key, value} renvoyé dans le device_record).
-     * Les valeurs sont des strings avec unité ("58.5V", "50.01Hz", "0.93kWh") —
-     * on extrait la partie numérique.
-     */
-    public function updateMeterValues($dataDtos) {
-        // Mapping clé dataDtos => logicalId de commande
-        $keyMap = array(
-            'v_ac_all'     => 'meter_voltage',
-            'freq'         => 'meter_frequency',
-            'energy_p_all' => 'meter_energy_p',
-            'energy_n_all' => 'meter_energy_n',
-        );
-        foreach ($dataDtos as $dto) {
-            $key   = isset($dto['key'])   ? $dto['key']   : null;
-            $value = isset($dto['value']) ? $dto['value'] : null;
-            if ($key === null || $value === null || !isset($keyMap[$key])) {
-                continue;
-            }
-            // Extraire la valeur numérique (ex: "58.5V" → 58.5, "0.93kWh" → 0.93)
-            $numericValue = floatval(preg_replace('/[^0-9.\-]/', '', $value));
-            $this->updateCmdValue($keyMap[$key], $numericValue);
-        }
+        $this->updateCmdValue('injection_control_state', $isControl ? 1 : 0);
+        $this->updateCmdValue('injection_limit_state', $requestedLimit);
     }
 
     /* ===================== WIDGET DASHBOARD ===================== */
@@ -989,6 +986,44 @@ class izypower extends eqLogic {
             // Capteurs CT rattachés à ce compteur, détectés dynamiquement (ct_power_ct2, ...)
             $replace['#ct_rows#'] = $this->buildCtRowsHtml();
 
+            // Contrôle d'injection réseau (anti-retour) : état + actions
+            // (bascule actif/inactif, réglage du seuil), reliées aux commandes
+            // d'action injection_control_on/off et injection_limit_set.
+            $injectionStateCmd = $this->getCmd(null, 'injection_control_state');
+            if (is_object($injectionStateCmd)) {
+                $injectionActive = intval($get('injection_control_state', 0)) == 1;
+                $injectionLimit = $get('injection_limit_state', null);
+                $injectionLimitVal = is_numeric($injectionLimit) ? round(floatval($injectionLimit)) : 300;
+                $h = $hist('injection_control_state');
+
+                $toggleCmd = $this->getCmd(null, $injectionActive ? 'injection_control_off' : 'injection_control_on');
+                $toggleId = is_object($toggleCmd) ? $toggleCmd->getId() : '0';
+                $toggleLabel = $injectionActive ? 'Désactiver' : 'Activer';
+                $toggleIcon = $injectionActive ? 'fa-stop' : 'fa-play';
+
+                $limitCmd = $this->getCmd(null, 'injection_limit_set');
+                $limitCmdId = is_object($limitCmd) ? $limitCmd->getId() : '0';
+
+                $replace['#injection_row#'] =
+                    '<div class="izy-injection">'
+                    . '<span class="' . ($injectionActive ? 'izy-injection-active' : 'izy-injection-inactive') . ' ' . $h['class'] . '" data-cmd_id="' . $h['id'] . '">'
+                    . '🚫⚡ Anti-injection ' . ($injectionActive ? 'active' : 'inactive')
+                    . '</span>'
+                    . '<span>' . $injectionLimitVal . ' W max</span>'
+                    . '</div>'
+                    . '<div class="izy-injection-actions">'
+                    . '<span class="cmd izy-injection-toggle cursor" data-cmd_id="' . $toggleId . '">'
+                    . '<i class="fas ' . $toggleIcon . '"></i> ' . $toggleLabel
+                    . '</span>'
+                    . '<span class="izy-injection-limit-group">'
+                    . '<input type="number" class="izy-injection-limit-input" min="0" max="36000" step="50" value="' . $injectionLimitVal . '">'
+                    . '<span class="cmd izy-injection-limit-apply cursor" data-cmd_id="' . $limitCmdId . '" title="Appliquer le seuil"><i class="fas fa-check"></i></span>'
+                    . '</span>'
+                    . '</div>';
+            } else {
+                $replace['#injection_row#'] = '';
+            }
+
             return template_replace($replace, getTemplate('core', $version, 'meter', 'izypower'));
         }
 
@@ -1076,13 +1111,48 @@ class izypower extends eqLogic {
 }
 
 class izypowerCmd extends cmd {
+    /*     * *************************Attributs****************************** */
 
-    public function execute($_options = array()) {
-        // Lecture seule : aucune action exécutable depuis Jeedom dans cette version.
-        return null;
-    }
+    /*
+    public static $_widgetPossibility = array();
+    */
 
+    /*     * ***********************Methode static*************************** */
+
+
+    /*     * *********************Methode d'instance************************* */
+
+    /*
+    * Permet d'empêcher la suppression des commandes même si elles ne sont pas dans la nouvelle configuration de l'équipement envoyé en JS
     public function dontRemoveCmd() {
-        return false;
+      return true;
     }
+    */
+
+    // Exécution d'une commande
+    public function execute($_options = array()) {
+        $eqLogic = $this->getEqLogic();
+        if (!is_object($eqLogic) || $eqLogic->getIsEnable() != 1) {
+            throw new Exception(__('Equipement désactivé, impossible d\'exécuter la commande : ' . $this->getHumanName(), __FILE__));
+        }
+        log::add('izypower', 'debug', 'command: ' . $this->getLogicalId() . ' parameters: ' . json_encode($_options));
+
+        switch ($this->getLogicalId()) {
+            case 'injection_control_on':
+                $eqLogic->setMeterInjectionControl(true, null);
+                return true;
+            case 'injection_control_off':
+                $eqLogic->setMeterInjectionControl(false, null);
+                return true;
+            case 'injection_limit_set':
+                $eqLogic->setMeterInjectionControl(true, isset($_options['slider']) ? $_options['slider'] : null);
+                return true;
+            default:
+                // Toutes les autres commandes du plugin sont des capteurs en
+                // lecture seule (rien à exécuter).
+                return false;
+        }
+    }
+
+    /*     * **********************Getteur Setteur*************************** */
 }

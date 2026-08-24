@@ -40,6 +40,35 @@
     .izy-meter .izy-footer{
       font-size:10px; opacity:.6; text-align:center; border-top:1px solid rgba(120,120,120,.2); padding-top:6px;
     }
+
+    .izy-meter .izy-injection{
+      display:flex; align-items:center; justify-content:space-between; gap:6px;
+      font-size:11px; padding:6px 8px; border-radius:8px 8px 0 0;
+      background:rgba(120,120,120,.10);
+    }
+    .izy-meter .izy-injection-active{ color:#28a745; font-weight:700; }
+    .izy-meter .izy-injection-inactive{ opacity:.6; }
+
+    .izy-meter .izy-injection-actions{
+      display:flex; align-items:center; justify-content:space-between; gap:6px;
+      font-size:11px; padding:6px 8px; margin-bottom:8px; border-radius:0 0 8px 8px;
+      background:rgba(120,120,120,.05);
+    }
+    .izy-meter .izy-injection-toggle{
+      display:flex; align-items:center; gap:4px; padding:3px 8px; border-radius:6px;
+      background:rgba(120,120,120,.15); font-weight:600;
+    }
+    .izy-meter .izy-injection-toggle:hover{ background:rgba(120,120,120,.25); }
+    .izy-meter .izy-injection-limit-group{ display:flex; align-items:center; gap:4px; }
+    .izy-meter .izy-injection-limit-input{
+      width:60px; font-size:11px; padding:2px 4px; border-radius:4px;
+      border:1px solid rgba(120,120,120,.3); background:transparent; color:inherit;
+    }
+    .izy-meter .izy-injection-limit-apply{
+      display:flex; align-items:center; justify-content:center; width:22px; height:22px;
+      border-radius:4px; background:rgba(120,120,120,.15);
+    }
+    .izy-meter .izy-injection-limit-apply:hover{ background:rgba(120,120,120,.25); }
   </style>
 
   <div class="widget-name">
@@ -66,6 +95,14 @@
     } else {
       document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .refresh')?.remove()
     }
+
+    document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .izy-injection-toggle')?.addEventListener('click', function() {
+      jeedom.cmd.execute({ id: this.dataset.cmd_id })
+    })
+    document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .izy-injection-limit-apply')?.addEventListener('click', function() {
+      var input = document.querySelector('.eqLogic[data-eqLogic_uid="#uid#"] .izy-injection-limit-input')
+      jeedom.cmd.execute({ id: this.dataset.cmd_id, value: { slider: input ? input.value : 0 } })
+    })
   </script>
 
   <div class="izy-body">
@@ -75,6 +112,8 @@
     <div class="izy-total-value #meter_power_history_class#" data-cmd_id="#meter_power_id#">⚡ #meter_power# W</div>
     <div class="izy-total-label">Puissance réseau</div>
   </div>
+
+  #injection_row#
 
   <div class="izy-grid">
     <div class="izy-k">🔌 Tension</div>
