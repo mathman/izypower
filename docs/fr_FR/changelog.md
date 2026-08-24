@@ -4,6 +4,10 @@
 >
 >Pour rappel s'il n'y a pas d'information sur la mise à jour, c'est que celle-ci concerne uniquement de la mise à jour de documentation, de traduction ou de texte.
 
+# 25/08/2026
+
+- Ajout de la commande anti injection
+
 # 11/08/2026
 
 - Ajout de commandes manquantes
