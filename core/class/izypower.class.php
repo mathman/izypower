@@ -551,6 +551,14 @@ class izypower extends eqLogic {
         foreach (self::getRateFields() as $logicalId => $def) {
             list($timeType, $field) = $def;
             $value = isset($reports[$timeType][$field]) ? $reports[$timeType][$field] : null;
+            // En début de période (ex. juste après minuit pour le rapport du
+            // jour), le rapport est vide mais l'API renvoie cover_rate et
+            // consumption_rate à "100.0%" : on ramène les taux à 0 pour
+            // éviter le pic dans l'historique.
+            $totalConsumption = isset($reports[$timeType]['total_consumption']) ? floatval($reports[$timeType]['total_consumption']) : 0;
+            if (!empty($reports[$timeType]) && $totalConsumption <= 0) {
+                $value = 0;
+            }
             $this->updateCmdValue($logicalId, self::extractRateValue($value));
         }
 
